@@ -44,15 +44,18 @@ void onMediaInfoFound(JNIEnv *env, jobject jMediaInfoBuilder, AVFormatContext *a
                                     duration_ms);
 }
 
-void onVideoStreamFound(JNIEnv *env, jobject jMediaInfoBuilder, AVFormatContext *avFormatContext,
-                        int index) {
+// Returns true when a frame loader was created for this stream. The frame loader then owns avFormatContext
+// and closes it when MediaInfo.release() is called. A frame loader is only created when [createFrameLoader]
+// is set, because the Kotlin side keeps the first video stream only.
+bool onVideoStreamFound(JNIEnv *env, jobject jMediaInfoBuilder, AVFormatContext *avFormatContext,
+                        int index, bool createFrameLoader) {
     AVStream *stream = avFormatContext->streams[index];
     AVCodecParameters *parameters = stream->codecpar;
 
     auto codecDescriptor = avcodec_descriptor_get(parameters->codec_id);
 
     int64_t frameLoaderContextHandle = -1;
-    auto *decoder = avcodec_find_decoder(parameters->codec_id);
+    auto *decoder = createFrameLoader ? avcodec_find_decoder(parameters->codec_id) : nullptr;
     if (decoder != nullptr) {
         auto *frameLoaderContext = (FrameLoaderContext *) malloc(sizeof(FrameLoaderContext));;
         frameLoaderContext->avFormatContext = avFormatContext;
@@ -109,6 +112,8 @@ void onVideoStreamFound(JNIEnv *env, jobject jMediaInfoBuilder, AVFormatContext 
                                     parameters->height,
                                     rotation,
                                     frameLoaderContextHandle);
+
+    return frameLoaderContextHandle != -1;
 }
 
 void onAudioStreamFound(JNIEnv *env, jobject jMediaInfoBuilder, AVFormatContext *avFormatContext,
@@ -202,7 +207,8 @@ void media_info_build(JNIEnv *env, jobject jMediaInfoBuilder, const char *uri) {
     }
 
     if (avformat_find_stream_info(avFormatContext, nullptr) < 0) {
-        avformat_free_context(avFormatContext);
+        // avformat_free_context() would leave the file open.
+        avformat_close_input(&avFormatContext);
         LOGE("ERROR Could not get the stream info");
         onError(env, jMediaInfoBuilder);
         return;
@@ -210,13 +216,23 @@ void media_info_build(JNIEnv *env, jobject jMediaInfoBuilder, const char *uri) {
 
     onMediaInfoFound(env, jMediaInfoBuilder, avFormatContext);
 
+    // The frame loader of the first video stream owns the context. Without one (audio files, or a video whose
+    // codec has no decoder in libavcodec) nothing else would close the file, so it is closed at the end.
+    bool contextOwnedByFrameLoader = false;
+    bool firstVideoStream = true;
+
     for (int pos = 0; pos < avFormatContext->nb_streams; pos++) {
         AVCodecParameters *parameters = avFormatContext->streams[pos]->codecpar;
         AVMediaType type = parameters->codec_type;
         switch (type) {
-            case AVMEDIA_TYPE_VIDEO:
-                onVideoStreamFound(env, jMediaInfoBuilder, avFormatContext, pos);
+            case AVMEDIA_TYPE_VIDEO: {
+                bool hasFrameLoader = onVideoStreamFound(env, jMediaInfoBuilder, avFormatContext, pos, firstVideoStream);
+                if (firstVideoStream) {
+                    contextOwnedByFrameLoader = hasFrameLoader;
+                    firstVideoStream = false;
+                }
                 break;
+            }
             case AVMEDIA_TYPE_AUDIO:
                 onAudioStreamFound(env, jMediaInfoBuilder, avFormatContext, pos);
                 break;
@@ -228,6 +244,10 @@ void media_info_build(JNIEnv *env, jobject jMediaInfoBuilder, const char *uri) {
 
     for (int pos = 0; pos < avFormatContext->nb_chapters; pos++) {
         onChapterFound(env, jMediaInfoBuilder, avFormatContext, pos);
+    }
+
+    if (!contextOwnedByFrameLoader) {
+        avformat_close_input(&avFormatContext);
     }
 }
 
