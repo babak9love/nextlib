@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <jni.h>
 #include <cstdlib>
+#include <cstring>
 #include <android/native_window_jni.h>
 #include <algorithm>
 #include "ffcommon.h"
@@ -40,7 +41,7 @@ static jmethodID growOutputBufferMethod;
  * Returns the created context.
  */
 AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
-                              jboolean outputFloat, jint rawSampleRate,
+                              jint outputMode, jint rawSampleRate,
                               jint rawChannelCount);
 
 /**
@@ -75,15 +76,17 @@ uint8_t *GrowOutputBufferCallback::operator()(int requiredSize) const {
 }
 
 AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
-                              jboolean outputFloat, jint rawSampleRate,
+                              jint outputMode, jint rawSampleRate,
                               jint rawChannelCount) {
     AVCodecContext *context = avcodec_alloc_context3(codec);
     if (!context) {
         LOGE("Failed to allocate context.");
         return nullptr;
     }
+    // outputMode bit 0: float output (else 16-bit). Bit 1: keep the source integer bit depth when
+    // the decoder produces integer samples (16-bit stays 16-bit, 24-bit is delivered as 32-bit).
     context->request_sample_fmt =
-            outputFloat ? OUTPUT_FORMAT_PCM_FLOAT : OUTPUT_FORMAT_PCM_16BIT;
+            (outputMode & 1) ? OUTPUT_FORMAT_PCM_FLOAT : OUTPUT_FORMAT_PCM_16BIT;
     if (extraData) {
         jsize size = env->GetArrayLength(extraData);
         context->extradata_size = size;
@@ -96,8 +99,9 @@ AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
         }
         env->GetByteArrayRegion(extraData, 0, size, (jbyte *) context->extradata);
     }
-    if (context->codec_id == AV_CODEC_ID_PCM_MULAW ||
-        context->codec_id == AV_CODEC_ID_PCM_ALAW) {
+    // Raw PCM streams (mu-law, a-law, s16/s24/s32/float...) carry no header, so the sample rate
+    // and channel count must come from the container.
+    if (strncmp(codec->name, "pcm_", 4) == 0 && rawSampleRate > 0 && rawChannelCount > 0) {
         context->sample_rate = rawSampleRate;
         context->ch_layout.nb_channels = rawChannelCount;
         av_channel_layout_default(&context->ch_layout, rawChannelCount);
@@ -108,6 +112,16 @@ AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
         logError("avcodec_open2", result);
         releaseContext(context);
         return nullptr;
+    }
+    if (outputMode & 2) {
+        AVSampleFormat packed = av_get_packed_sample_fmt(context->sample_fmt);
+        if (packed == AV_SAMPLE_FMT_S16) {
+            context->request_sample_fmt = AV_SAMPLE_FMT_S16;
+        } else if (packed == AV_SAMPLE_FMT_S32) {
+            // 24-bit sources are decoded by FFmpeg as left-aligned 32-bit integers.
+            context->request_sample_fmt = AV_SAMPLE_FMT_S32;
+        }
+        // Any other (float/double/8-bit) source keeps the float/16-bit choice made above.
     }
     return context;
 }
@@ -216,7 +230,7 @@ Java_io_github_anilbeesetti_nextlib_media3ext_ffdecoder_FfmpegAudioDecoder_ffmpe
                                                                         jobject thiz,
                                                                         jstring codec_name,
                                                                         jbyteArray extra_data,
-                                                                        jboolean output_float,
+                                                                        jint output_mode,
                                                                         jint raw_sample_rate,
                                                                         jint raw_channel_count) {
     AVCodec *codec = getCodecByName(env, codec_name);
@@ -226,7 +240,7 @@ Java_io_github_anilbeesetti_nextlib_media3ext_ffdecoder_FfmpegAudioDecoder_ffmpe
     }
     jclass clazz = env->FindClass("io/github/anilbeesetti/nextlib/media3ext/ffdecoder/FfmpegAudioDecoder");
     growOutputBufferMethod = env->GetMethodID(clazz, "growOutputBuffer","(Landroidx/media3/decoder/SimpleDecoderOutputBuffer;I)Ljava/nio/ByteBuffer;");
-    return (jlong) createContext(env, codec, extra_data, output_float, raw_sample_rate,
+    return (jlong) createContext(env, codec, extra_data, output_mode, raw_sample_rate,
                                  raw_channel_count);
 }
 
@@ -313,21 +327,42 @@ Java_io_github_anilbeesetti_nextlib_media3ext_ffdecoder_FfmpegAudioDecoder_ffmpe
     if (codecId == AV_CODEC_ID_TRUEHD) {
         // Release and recreate the context if the codec is TrueHD.
         // TODO: Figure out why flushing doesn't work for this codec.
-        auto outputFloat =
-                (jboolean) (context->request_sample_fmt == OUTPUT_FORMAT_PCM_FLOAT);
+        jint outputMode =
+                (context->request_sample_fmt == OUTPUT_FORMAT_PCM_FLOAT ? 1 : 0) |
+                (context->request_sample_fmt == AV_SAMPLE_FMT_S32 ? 2 : 0);
         releaseContext(context);
         auto *codec = const_cast<AVCodec *>(avcodec_find_decoder(codecId));
         if (!codec) {
             LOGE("Unexpected error finding codec %d.", codecId);
             return 0L;
         }
-        return (jlong) createContext(env, codec, extra_data, outputFloat,
+        return (jlong) createContext(env, codec, extra_data, outputMode,
                 /* rawSampleRate= */ -1,
                 /* rawChannelCount= */ -1);
     }
 
     avcodec_flush_buffers(context);
     return (jlong) context;
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_io_github_anilbeesetti_nextlib_media3ext_ffdecoder_FfmpegAudioDecoder_ffmpegGetOutputEncoding(JNIEnv *env,
+                                                                                   jobject thiz,
+                                                                                   jlong context) {
+    if (!context) {
+        LOGE("Context must be non-NULL.");
+        return 0;
+    }
+    // Values match androidx.media3.common.C.ENCODING_PCM_16BIT / _32BIT / _FLOAT.
+    switch (((AVCodecContext *) context)->request_sample_fmt) {
+        case AV_SAMPLE_FMT_S32:
+            return 22;
+        case AV_SAMPLE_FMT_FLT:
+            return 4;
+        default:
+            return 2;
+    }
 }
 
 extern "C"

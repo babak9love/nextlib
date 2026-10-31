@@ -79,7 +79,7 @@ public final class FfmpegAudioRenderer extends DecoderAudioRenderer<FfmpegAudioD
     String mimeType = Assertions.checkNotNull(format.sampleMimeType);
     if (!FfmpegLibrary.isAvailable() || !MimeTypes.isAudio(mimeType)) {
       return C.FORMAT_UNSUPPORTED_TYPE;
-    } else if (!FfmpegLibrary.supportsFormat(mimeType)
+    } else if (!FfmpegLibrary.supportsFormat(format)
         || (!sinkSupportsFormat(format, C.ENCODING_PCM_16BIT)
             && !sinkSupportsFormat(format, C.ENCODING_PCM_FLOAT))) {
       return C.FORMAT_UNSUPPORTED_SUBTYPE;
@@ -108,7 +108,13 @@ public final class FfmpegAudioRenderer extends DecoderAudioRenderer<FfmpegAudioD
         format.maxInputSize != Format.NO_VALUE ? format.maxInputSize : DEFAULT_INPUT_BUFFER_SIZE;
     FfmpegAudioDecoder decoder =
         new FfmpegAudioDecoder(
-            format, NUM_BUFFERS, NUM_BUFFERS, initialInputBufferSize, shouldOutputFloat(format));
+            format,
+            NUM_BUFFERS,
+            NUM_BUFFERS,
+            initialInputBufferSize,
+            shouldOutputFloat(format),
+            shouldPassThroughPcm(format),
+            shouldPreserveIntDepth(format));
     TraceUtil.endSection();
     return decoder;
   }
@@ -138,7 +144,46 @@ public final class FfmpegAudioRenderer extends DecoderAudioRenderer<FfmpegAudioD
         Util.getPcmFormat(pcmEncoding, inputFormat.channelCount, inputFormat.sampleRate));
   }
 
+  /**
+   * Returns whether raw little-endian PCM can be handed to the sink byte-for-byte, with no
+   * conversion at all (e.g. 24-bit WAV stays 24-bit).
+   */
+  private boolean shouldPassThroughPcm(Format inputFormat) {
+    if (!MimeTypes.AUDIO_RAW.equals(inputFormat.sampleMimeType)) {
+      return false;
+    }
+    switch (inputFormat.pcmEncoding) {
+      case C.ENCODING_PCM_16BIT:
+      case C.ENCODING_PCM_FLOAT:
+        break;
+      case C.ENCODING_PCM_24BIT:
+      case C.ENCODING_PCM_32BIT:
+        // AudioTrack only accepts 24-bit packed and 32-bit integer PCM from Android 12 (API 31).
+        if (Util.SDK_INT < 31) {
+          return false;
+        }
+        break;
+      default:
+        return false;
+    }
+    return sinkSupportsFormat(inputFormat, inputFormat.pcmEncoding);
+  }
+
+  /**
+   * Returns whether integer-sample decoders (FLAC, ALAC, TrueHD...) should keep their bit depth
+   * (24-bit is delivered as 32-bit integer) instead of being converted to float or 16-bit.
+   */
+  private boolean shouldPreserveIntDepth(Format inputFormat) {
+    return Util.SDK_INT >= 31
+        && sinkSupportsFormat(inputFormat, C.ENCODING_PCM_32BIT)
+        && sinkSupportsFormat(inputFormat, C.ENCODING_PCM_16BIT);
+  }
+
   private boolean shouldOutputFloat(Format inputFormat) {
+    if (FloatWavExtractor.MIME_PCM_F64LE.equals(inputFormat.sampleMimeType)) {
+      // AudioTrack has no 64-bit output; 32-bit float is the closest, never fall back to 16-bit.
+      return true;
+    }
     if (!sinkSupportsFormat(inputFormat, C.ENCODING_PCM_16BIT)) {
       // We have no choice because the sink doesn't support 16-bit integer PCM.
       return true;

@@ -33,6 +33,7 @@ final class FfmpegAudioDecoder
 
   private final String codecName;
   @Nullable private final byte[] extraData;
+  private final boolean passthroughPcm;
   private final @C.PcmEncoding int encoding;
   private int outputBufferSize;
 
@@ -46,21 +47,39 @@ final class FfmpegAudioDecoder
       int numInputBuffers,
       int numOutputBuffers,
       int initialInputBufferSize,
-      boolean outputFloat)
+      boolean outputFloat,
+      boolean passthroughPcm,
+      boolean preserveIntDepth)
       throws FfmpegDecoderException {
     super(new DecoderInputBuffer[numInputBuffers], new SimpleDecoderOutputBuffer[numOutputBuffers]);
     if (!FfmpegLibrary.isAvailable()) {
       throw new FfmpegDecoderException("Failed to load decoder native libraries.");
     }
     checkNotNull(format.sampleMimeType);
-    codecName = checkNotNull(FfmpegLibrary.getCodecName(format.sampleMimeType));
+    codecName = checkNotNull(FfmpegLibrary.getCodecName(format));
     extraData = getExtraData(format.sampleMimeType, format.initializationData);
-    encoding = outputFloat ? C.ENCODING_PCM_FLOAT : C.ENCODING_PCM_16BIT;
-    outputBufferSize = outputFloat ? INITIAL_OUTPUT_BUFFER_SIZE_32BIT : INITIAL_OUTPUT_BUFFER_SIZE_16BIT;
-    nativeContext =
-        ffmpegInitialize(codecName, extraData, outputFloat, format.sampleRate, format.channelCount);
-    if (nativeContext == 0) {
-      throw new FfmpegDecoderException("Initialization failed.");
+    this.passthroughPcm = passthroughPcm;
+    if (passthroughPcm) {
+      // Raw PCM is forwarded untouched: same encoding, sample rate and channel count as the file.
+      encoding = format.pcmEncoding;
+      outputBufferSize = initialInputBufferSize;
+      channelCount = format.channelCount;
+      sampleRate = format.sampleRate;
+      hasOutputFormat = true;
+      nativeContext = 0;
+    } else {
+      int outputMode = (outputFloat ? 1 : 0) | (preserveIntDepth ? 2 : 0);
+      nativeContext =
+          ffmpegInitialize(codecName, extraData, outputMode, format.sampleRate, format.channelCount);
+      if (nativeContext == 0) {
+        throw new FfmpegDecoderException("Initialization failed.");
+      }
+      // The native side may keep the source integer bit depth, so ask which encoding it produces.
+      encoding = ffmpegGetOutputEncoding(nativeContext);
+      outputBufferSize =
+          encoding == C.ENCODING_PCM_16BIT
+              ? INITIAL_OUTPUT_BUFFER_SIZE_16BIT
+              : INITIAL_OUTPUT_BUFFER_SIZE_32BIT;
     }
     setInitialInputBufferSize(initialInputBufferSize);
   }
@@ -91,6 +110,15 @@ final class FfmpegAudioDecoder
   @Nullable
   protected FfmpegDecoderException decode(
       DecoderInputBuffer inputBuffer, SimpleDecoderOutputBuffer outputBuffer, boolean reset) {
+    if (passthroughPcm) {
+      // Bit-exact copy of the input samples: no decoding, resampling or format conversion.
+      ByteBuffer input = Util.castNonNull(inputBuffer.data);
+      int size = input.limit();
+      ByteBuffer out = outputBuffer.init(inputBuffer.timeUs, size);
+      out.put(input);
+      out.flip();
+      return null;
+    }
     if (reset) {
       nativeContext = ffmpegReset(nativeContext, extraData);
       if (nativeContext == 0) {
@@ -216,9 +244,11 @@ final class FfmpegAudioDecoder
   private native long ffmpegInitialize(
       String codecName,
       @Nullable byte[] extraData,
-      boolean outputFloat,
+      int outputMode,
       int rawSampleRate,
       int rawChannelCount);
+
+  private native int ffmpegGetOutputEncoding(long context);
 
   private native int ffmpegDecode(
       long context, ByteBuffer inputData, int inputSize, SimpleDecoderOutputBuffer decoderOutputBuffer, ByteBuffer outputData, int outputSize);

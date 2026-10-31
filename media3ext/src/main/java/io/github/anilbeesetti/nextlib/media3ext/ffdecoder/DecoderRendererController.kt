@@ -91,7 +91,11 @@ internal class DecoderMediaCodecSelector(
             else -> return decoderInfos
         }
         return when (mode) {
-            DecoderMode.AUTO -> decoderInfos.sortedBy(MediaCodecInfo::decoderPriority)
+            // Raw PCM (WAV) is handed to the sink byte-for-byte by the FFmpeg renderer, so in AUTO
+            // mode MediaCodec's raw decoder is skipped and the track falls through to FFmpeg.
+            DecoderMode.AUTO ->
+                if (mimeType == MimeTypes.AUDIO_RAW) emptyList()
+                else decoderInfos.sortedBy(MediaCodecInfo::decoderPriority)
             DecoderMode.HARDWARE -> decoderInfos.filter(MediaCodecInfo::hardwareAccelerated)
             DecoderMode.SOFTWARE -> decoderInfos.filter(MediaCodecInfo::softwareOnly)
             DecoderMode.FFMPEG -> emptyList()

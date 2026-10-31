@@ -2,6 +2,7 @@ package io.github.anilbeesetti.nextlib.media3ext.ffdecoder;
 
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
+import androidx.media3.common.Format;
 import androidx.media3.common.MediaLibraryInfo;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.LibraryLoader;
@@ -95,6 +96,46 @@ public final class FfmpegLibrary {
   }
 
   /**
+   * Returns whether the underlying library supports the specified format. Unlike {@link
+   * #supportsFormat(String)} this also handles raw PCM, whose decoder depends on the PCM encoding.
+   */
+  public static boolean supportsFormat(Format format) {
+    if (!isAvailable() || format.sampleMimeType == null) {
+      return false;
+    }
+    @Nullable String codecName = getCodecName(format);
+    if (codecName == null) {
+      return false;
+    }
+    if (!ffmpegHasDecoder(codecName)) {
+      Log.w(TAG, "No " + codecName + " decoder available. Check the FFmpeg build configuration.");
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Returns the name of the FFmpeg decoder that could be used to decode the format, or {@code null}
+   * if it's unsupported. Handles raw PCM (audio/raw) using {@link Format#pcmEncoding}.
+   */
+  @Nullable
+  /* package */ static String getCodecName(Format format) {
+    if (MimeTypes.AUDIO_RAW.equals(format.sampleMimeType)) {
+      return switch (format.pcmEncoding) {
+        case C.ENCODING_PCM_8BIT -> "pcm_u8";
+        case C.ENCODING_PCM_16BIT -> "pcm_s16le";
+        case C.ENCODING_PCM_16BIT_BIG_ENDIAN -> "pcm_s16be";
+        case C.ENCODING_PCM_24BIT -> "pcm_s24le";
+        case C.ENCODING_PCM_24BIT_BIG_ENDIAN -> "pcm_s24be";
+        case C.ENCODING_PCM_32BIT -> "pcm_s32le";
+        case C.ENCODING_PCM_FLOAT -> "pcm_f32le";
+        default -> null;
+      };
+    }
+    return format.sampleMimeType == null ? null : getCodecName(format.sampleMimeType);
+  }
+
+  /**
    * Returns the name of the FFmpeg decoder that could be used to decode the format, or {@code null}
    * if it's unsupported.
    */
@@ -116,6 +157,7 @@ public final class FfmpegLibrary {
       case MimeTypes.AUDIO_ALAC -> "alac";
       case MimeTypes.AUDIO_MLAW -> "pcm_mulaw";
       case MimeTypes.AUDIO_ALAW -> "pcm_alaw";
+      case FloatWavExtractor.MIME_PCM_F64LE -> "pcm_f64le";
 
       // Video codecs
       case MimeTypes.VIDEO_H264 -> "h264";
