@@ -114,10 +114,15 @@ AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
         return nullptr;
     }
     if (outputMode & 2) {
+        // Some decoders (FLAC) only pick their sample format when the first frame is decoded, so
+        // sample_fmt can still be unset here. Fall back to the stream's bit depth in that case.
         AVSampleFormat packed = av_get_packed_sample_fmt(context->sample_fmt);
-        if (packed == AV_SAMPLE_FMT_S16) {
+        int bits = context->bits_per_raw_sample;
+        if (packed == AV_SAMPLE_FMT_S16 ||
+            (packed == AV_SAMPLE_FMT_NONE && bits > 0 && bits <= 16)) {
             context->request_sample_fmt = AV_SAMPLE_FMT_S16;
-        } else if (packed == AV_SAMPLE_FMT_S32) {
+        } else if (packed == AV_SAMPLE_FMT_S32 ||
+                   (packed == AV_SAMPLE_FMT_NONE && bits > 16 && bits <= 32)) {
             // 24-bit sources are decoded by FFmpeg as left-aligned 32-bit integers.
             context->request_sample_fmt = AV_SAMPLE_FMT_S32;
         }

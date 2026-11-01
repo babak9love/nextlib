@@ -35,3 +35,7 @@ Merged from nextlib-fixed:
 - ffmpeg/setup.sh + FfmpegLibrary.java -> pcm_s32be / ENCODING_PCM_32BIT_BIG_ENDIAN, ENCODING_PCM_DOUBLE -> pcm_f64le
 - getCodecName(String mimeType, int pcmEncoding) kept alongside getCodecName(Format); FfmpegLibraryTest + README from that version
 - FfmpegAudioRenderer.shouldOutputFloat -> float output for ENCODING_PCM_DOUBLE too
+
+FLAC bit depth fix:
+- ffaudio.cpp -> FLAC leaves sample_fmt unset until the first frame, so the depth check now falls back to bits_per_raw_sample
+  (16-bit FLAC stays 16-bit, 24-bit FLAC becomes 32-bit integer) instead of silently using float.
