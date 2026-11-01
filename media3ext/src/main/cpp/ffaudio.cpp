@@ -3,6 +3,8 @@
 #include <jni.h>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 #include <android/native_window_jni.h>
 #include <algorithm>
 #include "ffcommon.h"
@@ -34,6 +36,28 @@ static const int AUDIO_DECODER_ERROR_OTHER = -2;
 
 static jmethodID growOutputBufferMethod;
 
+
+// Output mode flags of every open audio context (bit 0: float, bit 1: keep source integer depth).
+// The final output sample format is only known once the first frame is decoded, because some
+// decoders (FLAC) do not report their sample format when they are opened.
+static std::mutex gOutputModeMutex;
+static std::unordered_map<AVCodecContext *, int> gOutputModes;
+
+static void setOutputMode(AVCodecContext *context, int mode) {
+    std::lock_guard<std::mutex> lock(gOutputModeMutex);
+    gOutputModes[context] = mode;
+}
+
+static int getOutputMode(AVCodecContext *context) {
+    std::lock_guard<std::mutex> lock(gOutputModeMutex);
+    auto it = gOutputModes.find(context);
+    return it == gOutputModes.end() ? 0 : it->second;
+}
+
+static void clearOutputMode(AVCodecContext *context) {
+    std::lock_guard<std::mutex> lock(gOutputModeMutex);
+    gOutputModes.erase(context);
+}
 
 /**
  * Allocates and opens a new AVCodecContext for the specified codec, passing the
@@ -116,23 +140,7 @@ AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
         releaseContext(context);
         return nullptr;
     }
-    if (outputMode & 2) {
-        AVSampleFormat packed = av_get_packed_sample_fmt(context->sample_fmt);
-        int bits = context->bits_per_raw_sample;  // true bit depth of the stream, 0 if unknown
-        if (packed == AV_SAMPLE_FMT_S16 ||
-            (packed == AV_SAMPLE_FMT_NONE && bits > 0 && bits <= 16)) {
-            context->request_sample_fmt = AV_SAMPLE_FMT_S16;
-        } else if (packed == AV_SAMPLE_FMT_S32 || packed == AV_SAMPLE_FMT_NONE) {
-            // A 16-bit stream held in a 32-bit container goes back to 16-bit (lossless);
-            // 24-bit sources are decoded as left-aligned 32-bit integers and stay 32-bit.
-            context->request_sample_fmt =
-                    (bits > 0 && bits <= 16) ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_S32;
-        } else {
-            // float/double/8-bit sources keep the float/16-bit choice
-            context->request_sample_fmt =
-                    (outputMode & 1) ? OUTPUT_FORMAT_PCM_FLOAT : OUTPUT_FORMAT_PCM_16BIT;
-        }
-    }
+    setOutputMode(context, outputMode);
     return context;
 }
 
@@ -176,6 +184,23 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
         if (context->opaque) {
             resampleContext = (SwrContext *) context->opaque;
         } else {
+            int mode = getOutputMode(context);
+            if (mode & 2) {
+                // Keep the source integer depth: pick the output format from the real frame format.
+                AVSampleFormat packed = av_get_packed_sample_fmt(sampleFormat);
+                int bits = context->bits_per_raw_sample;  // 0 if unknown
+                if (packed == AV_SAMPLE_FMT_S16) {
+                    context->request_sample_fmt = AV_SAMPLE_FMT_S16;
+                } else if (packed == AV_SAMPLE_FMT_S32) {
+                    // 24-bit sources are decoded as left-aligned 32-bit integers.
+                    context->request_sample_fmt =
+                            (bits > 0 && bits <= 16) ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_S32;
+                } else {
+                    // float/double/8-bit sources keep the float/16-bit choice
+                    context->request_sample_fmt =
+                            (mode & 1) ? OUTPUT_FORMAT_PCM_FLOAT : OUTPUT_FORMAT_PCM_16BIT;
+                }
+            }
             resampleContext = swr_alloc();
             av_opt_set_chlayout(resampleContext, "in_chlayout", &channelLayout, 0);
             av_opt_set_chlayout(resampleContext, "out_chlayout", &channelLayout, 0);
@@ -337,9 +362,8 @@ Java_io_github_anilbeesetti_nextlib_media3ext_ffdecoder_FfmpegAudioDecoder_ffmpe
     if (codecId == AV_CODEC_ID_TRUEHD) {
         // Release and recreate the context if the codec is TrueHD.
         // TODO: Figure out why flushing doesn't work for this codec.
-        jint outputMode =
-                (context->request_sample_fmt == OUTPUT_FORMAT_PCM_FLOAT ? 1 : 0) |
-                (context->request_sample_fmt == AV_SAMPLE_FMT_S32 ? 2 : 0);
+        jint outputMode = getOutputMode(context);
+        clearOutputMode(context);
         releaseContext(context);
         auto *codec = const_cast<AVCodec *>(avcodec_find_decoder(codecId));
         if (!codec) {
@@ -381,6 +405,7 @@ Java_io_github_anilbeesetti_nextlib_media3ext_ffdecoder_FfmpegAudioDecoder_ffmpe
                                                                      jobject thiz,
                                                                      jlong context) {
     if (context) {
+        clearOutputMode((AVCodecContext *) context);
         releaseContext((AVCodecContext *) context);
     }
 }

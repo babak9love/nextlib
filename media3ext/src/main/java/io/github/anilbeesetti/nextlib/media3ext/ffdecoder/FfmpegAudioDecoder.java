@@ -34,7 +34,7 @@ final class FfmpegAudioDecoder
   private final String codecName;
   @Nullable private final byte[] extraData;
   private final boolean passthroughPcm;
-  private final @C.PcmEncoding int encoding;
+  private volatile @C.PcmEncoding int encoding;
   private int outputBufferSize;
 
   private long nativeContext; // May be reassigned on resetting the codec.
@@ -153,6 +153,8 @@ final class FfmpegAudioDecoder
         parsableExtraData.setPosition(extraData.length - 4);
         sampleRate = parsableExtraData.readUnsignedIntToInt();
       }
+      // The native side picks the final sample format when the first frame is decoded.
+      encoding = ffmpegGetOutputEncoding(nativeContext);
       hasOutputFormat = true;
     }
     // Get a new reference to the output ByteBuffer in case the native decode method reallocated the

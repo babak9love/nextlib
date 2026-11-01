@@ -174,9 +174,8 @@ public final class FfmpegAudioRenderer extends DecoderAudioRenderer<FfmpegAudioD
    * (24-bit is delivered as 32-bit integer) instead of being converted to float or 16-bit.
    */
   private boolean shouldPreserveIntDepth(Format inputFormat) {
-    return Util.SDK_INT >= 31
-        && sinkSupportsFormat(inputFormat, C.ENCODING_PCM_32BIT)
-        && sinkSupportsFormat(inputFormat, C.ENCODING_PCM_16BIT);
+    // 32-bit integer output needs Android 12+. The sink converts it itself when it prefers float.
+    return Util.SDK_INT >= 31 && sinkSupportsFormat(inputFormat, C.ENCODING_PCM_16BIT);
   }
 
   private boolean shouldOutputFloat(Format inputFormat) {

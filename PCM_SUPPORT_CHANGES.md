@@ -45,3 +45,10 @@ Fixes from device tests (16-bit FLAC):
   while preserving depth, and a 16-bit stream in a 32-bit container goes back to 16-bit output (lossless).
 - DecoderRendererController.kt -> in AUTO, FLAC and ALAC also go to the FFmpeg renderer (the platform FLAC decoder produced distorted
   audio at 192 kHz with float output on the test device).
+
+16-bit FLAC still came out as float (device test):
+- ffaudio.cpp -> the output sample format is now chosen when the first frame is decoded (FLAC does not report its sample format at open
+  and leaves bits_per_raw_sample at 0 for 16-bit streams, so the open-time guess fell through to 32-bit). Output flags are kept per context in a
+  small registry; the TrueHD recreate path reuses them.
+- FfmpegAudioDecoder.java -> the output encoding is refreshed from native after the first decode (the renderer configures the sink after that).
+- FfmpegAudioRenderer.java -> preserve-depth no longer asks the sink about 32-bit (SDK >= 31 and 16-bit support is enough).
