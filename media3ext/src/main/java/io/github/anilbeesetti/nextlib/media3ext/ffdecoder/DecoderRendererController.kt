@@ -47,12 +47,27 @@ internal class DecoderRendererController(
         }
         return renderers.map { renderer ->
             when (renderer.trackType) {
-                C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO -> ModeAwareRenderer(renderer) {
+                C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO -> ModeAwareRenderer(
+                    renderer,
+                    handles = { format -> handlesFormat(renderer, format) },
+                ) {
                     mode(renderer.trackType).enables(renderer is FfmpegVideoRenderer || renderer is FfmpegAudioRenderer)
                 }
                 else -> renderer
             }
         }.toTypedArray().also { this.renderers = it }
+    }
+
+    /**
+     * In AUTO mode raw PCM (WAV) belongs to the FFmpeg audio renderer, which hands the samples to
+     * the sink byte-for-byte. Media3's MediaCodec audio renderer would otherwise claim `audio/raw`
+     * on its own (it does not ask the MediaCodecSelector for raw PCM) and then fail on 24-bit audio.
+     */
+    private fun handlesFormat(renderer: Renderer, format: Format): Boolean {
+        if (renderer.trackType != C.TRACK_TYPE_AUDIO || renderer is FfmpegAudioRenderer) return true
+        return !(audioMode == DecoderMode.AUTO &&
+            format.sampleMimeType == MimeTypes.AUDIO_RAW &&
+            FfmpegLibrary.supportsFormat(format))
     }
 
     fun apply(trackSelector: DefaultTrackSelector) {
@@ -106,12 +121,13 @@ internal class DecoderMediaCodecSelector(
 @UnstableApi
 internal class ModeAwareRenderer(
     delegate: Renderer,
+    val handles: (Format) -> Boolean = { true },
     val isEnabled: () -> Boolean,
 ) : ForwardingRenderer(delegate) {
     // MappingTrackSelector maps tracks before considering disabled renderer flags.
     private val modeAwareCapabilities = object : RendererCapabilities by delegate.capabilities {
         override fun supportsFormat(format: Format): Int =
-            if (isEnabled()) delegate.capabilities.supportsFormat(format)
+            if (isEnabled() && handles(format)) delegate.capabilities.supportsFormat(format)
             else RendererCapabilities.create(C.FORMAT_UNSUPPORTED_TYPE)
     }
 

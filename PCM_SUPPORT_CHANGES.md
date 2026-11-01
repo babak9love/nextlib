@@ -25,3 +25,13 @@ Native bit depth for FFmpeg-decoded lossless codecs (FLAC, ALAC, TrueHD...):
 
 Auto mode:
 - DecoderRendererController.kt -> in AUTO, audio/raw skips MediaCodec's raw decoder so the FFmpeg renderer (bit-exact passthrough) plays it.
+
+Auto mode fix (2):
+- DecoderRendererController.kt -> Media3's MediaCodecAudioRenderer claims audio/raw without consulting the MediaCodecSelector, so in AUTO the
+  MediaCodec audio renderer now reports raw PCM (that FFmpeg can handle) as unsupported and the FFmpeg renderer gets it.
+
+Merged from nextlib-fixed:
+- .github/workflows/build.yaml -> chmod +x gradlew ffmpeg/setup.sh (zip uploads lose the executable bit)
+- ffmpeg/setup.sh + FfmpegLibrary.java -> pcm_s32be / ENCODING_PCM_32BIT_BIG_ENDIAN, ENCODING_PCM_DOUBLE -> pcm_f64le
+- getCodecName(String mimeType, int pcmEncoding) kept alongside getCodecName(Format); FfmpegLibraryTest + README from that version
+- FfmpegAudioRenderer.shouldOutputFloat -> float output for ENCODING_PCM_DOUBLE too

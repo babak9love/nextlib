@@ -180,7 +180,8 @@ public final class FfmpegAudioRenderer extends DecoderAudioRenderer<FfmpegAudioD
   }
 
   private boolean shouldOutputFloat(Format inputFormat) {
-    if (FloatWavExtractor.MIME_PCM_F64LE.equals(inputFormat.sampleMimeType)) {
+    if (FloatWavExtractor.MIME_PCM_F64LE.equals(inputFormat.sampleMimeType)
+        || inputFormat.pcmEncoding == C.ENCODING_PCM_DOUBLE) {
       // AudioTrack has no 64-bit output; 32-bit float is the closest, never fall back to 16-bit.
       return true;
     }

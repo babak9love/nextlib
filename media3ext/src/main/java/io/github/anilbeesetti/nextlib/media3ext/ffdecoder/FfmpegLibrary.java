@@ -120,19 +120,31 @@ public final class FfmpegLibrary {
    */
   @Nullable
   /* package */ static String getCodecName(Format format) {
-    if (MimeTypes.AUDIO_RAW.equals(format.sampleMimeType)) {
-      return switch (format.pcmEncoding) {
+    return format.sampleMimeType == null ? null : getCodecName(format.sampleMimeType, format.pcmEncoding);
+  }
+
+  /**
+   * Returns the name of the FFmpeg decoder for the MIME type and PCM encoding: the PCM decoder for
+   * raw audio (WAV and other uncompressed audio), the same as {@link #getCodecName(String)} for
+   * everything else. Returns {@code null} if it's unsupported.
+   */
+  @Nullable
+  /* package */ static String getCodecName(String mimeType, int pcmEncoding) {
+    if (MimeTypes.AUDIO_RAW.equals(mimeType)) {
+      return switch (pcmEncoding) {
         case C.ENCODING_PCM_8BIT -> "pcm_u8";
         case C.ENCODING_PCM_16BIT -> "pcm_s16le";
         case C.ENCODING_PCM_16BIT_BIG_ENDIAN -> "pcm_s16be";
         case C.ENCODING_PCM_24BIT -> "pcm_s24le";
         case C.ENCODING_PCM_24BIT_BIG_ENDIAN -> "pcm_s24be";
         case C.ENCODING_PCM_32BIT -> "pcm_s32le";
+        case C.ENCODING_PCM_32BIT_BIG_ENDIAN -> "pcm_s32be";
         case C.ENCODING_PCM_FLOAT -> "pcm_f32le";
+        case C.ENCODING_PCM_DOUBLE -> "pcm_f64le";
         default -> null;
       };
     }
-    return format.sampleMimeType == null ? null : getCodecName(format.sampleMimeType);
+    return getCodecName(mimeType);
   }
 
   /**

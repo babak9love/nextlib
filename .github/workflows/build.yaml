@@ -16,6 +16,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Make the build scripts executable
+        run: chmod +x gradlew ffmpeg/setup.sh
+
       - name: Set Up JDK 17
         uses: actions/setup-java@v6
         with:
