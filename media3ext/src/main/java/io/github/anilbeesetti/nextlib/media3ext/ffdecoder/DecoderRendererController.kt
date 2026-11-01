@@ -65,8 +65,9 @@ internal class DecoderRendererController(
      */
     private fun handlesFormat(renderer: Renderer, format: Format): Boolean {
         if (renderer.trackType != C.TRACK_TYPE_AUDIO || renderer is FfmpegAudioRenderer) return true
+        val mime = format.sampleMimeType
         return !(audioMode == DecoderMode.AUTO &&
-            format.sampleMimeType == MimeTypes.AUDIO_RAW &&
+            (mime == MimeTypes.AUDIO_RAW || mime == MimeTypes.AUDIO_FLAC || mime == MimeTypes.AUDIO_ALAC) &&
             FfmpegLibrary.supportsFormat(format))
     }
 

@@ -85,8 +85,11 @@ AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
     }
     // outputMode bit 0: float output (else 16-bit). Bit 1: keep the source integer bit depth when
     // the decoder produces integer samples (16-bit stays 16-bit, 24-bit is delivered as 32-bit).
+    // While preserving the source depth the request must stay neutral (16-bit): FFmpeg's FLAC
+    // decoder reads request_sample_fmt and switches a 16-bit stream to 32-bit if float is requested.
     context->request_sample_fmt =
-            (outputMode & 1) ? OUTPUT_FORMAT_PCM_FLOAT : OUTPUT_FORMAT_PCM_16BIT;
+            ((outputMode & 1) && !(outputMode & 2)) ? OUTPUT_FORMAT_PCM_FLOAT
+                                                    : OUTPUT_FORMAT_PCM_16BIT;
     if (extraData) {
         jsize size = env->GetArrayLength(extraData);
         context->extradata_size = size;
@@ -114,19 +117,21 @@ AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
         return nullptr;
     }
     if (outputMode & 2) {
-        // Some decoders (FLAC) only pick their sample format when the first frame is decoded, so
-        // sample_fmt can still be unset here. Fall back to the stream's bit depth in that case.
         AVSampleFormat packed = av_get_packed_sample_fmt(context->sample_fmt);
-        int bits = context->bits_per_raw_sample;
+        int bits = context->bits_per_raw_sample;  // true bit depth of the stream, 0 if unknown
         if (packed == AV_SAMPLE_FMT_S16 ||
             (packed == AV_SAMPLE_FMT_NONE && bits > 0 && bits <= 16)) {
             context->request_sample_fmt = AV_SAMPLE_FMT_S16;
-        } else if (packed == AV_SAMPLE_FMT_S32 ||
-                   (packed == AV_SAMPLE_FMT_NONE && bits > 16 && bits <= 32)) {
-            // 24-bit sources are decoded by FFmpeg as left-aligned 32-bit integers.
-            context->request_sample_fmt = AV_SAMPLE_FMT_S32;
+        } else if (packed == AV_SAMPLE_FMT_S32 || packed == AV_SAMPLE_FMT_NONE) {
+            // A 16-bit stream held in a 32-bit container goes back to 16-bit (lossless);
+            // 24-bit sources are decoded as left-aligned 32-bit integers and stay 32-bit.
+            context->request_sample_fmt =
+                    (bits > 0 && bits <= 16) ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_S32;
+        } else {
+            // float/double/8-bit sources keep the float/16-bit choice
+            context->request_sample_fmt =
+                    (outputMode & 1) ? OUTPUT_FORMAT_PCM_FLOAT : OUTPUT_FORMAT_PCM_16BIT;
         }
-        // Any other (float/double/8-bit) source keeps the float/16-bit choice made above.
     }
     return context;
 }

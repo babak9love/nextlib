@@ -39,3 +39,9 @@ Merged from nextlib-fixed:
 FLAC bit depth fix:
 - ffaudio.cpp -> FLAC leaves sample_fmt unset until the first frame, so the depth check now falls back to bits_per_raw_sample
   (16-bit FLAC stays 16-bit, 24-bit FLAC becomes 32-bit integer) instead of silently using float.
+
+Fixes from device tests (16-bit FLAC):
+- ffaudio.cpp -> FLAC's decoder reads request_sample_fmt and used S32 for a 16-bit stream when float was requested; the request is now neutral
+  while preserving depth, and a 16-bit stream in a 32-bit container goes back to 16-bit output (lossless).
+- DecoderRendererController.kt -> in AUTO, FLAC and ALAC also go to the FFmpeg renderer (the platform FLAC decoder produced distorted
+  audio at 192 kHz with float output on the test device).
